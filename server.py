@@ -1,25 +1,33 @@
 import os
-import sys
 from fastmcp import FastMCP
 from openai import OpenAI
 
-# Project directory where stories will be saved
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ==============================================================
+# CONFIGURATION
+# ==============================================================
+# All generated stories are saved inside this subfolder
+STORIES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stories")
 
-# Initialize the MCP Server named "Creative Story Generator"
-mcp = FastMCP("Creative Story Generator")
+# Ensure the stories folder exists on startup
+os.makedirs(STORIES_DIR, exist_ok=True)
 
-# Connect to LM Studio's OpenAI-compatible local server
-LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
-lm_studio_client = OpenAI(
+# LM Studio local API URL (must be running)
+LM_STUDIO_URL = "http://localhost:1234/v1"
+
+# Initialize FastMCP server
+mcp = FastMCP("Story Generator")
+
+# Initialize LM Studio client
+client = OpenAI(
     base_url=LM_STUDIO_URL,
-    api_key="lm-studio"  # LM Studio does not require a real API key
+    api_key="lm-studio"  # LM Studio does not need a real API key
 )
 
-def get_available_model() -> str:
-    """Fetch the first non-embedding model from LM Studio, or fallback to 'local-model'."""
+
+def get_model() -> str:
+    """Auto-detect the loaded model from LM Studio."""
     try:
-        models = lm_studio_client.models.list()
+        models = client.models.list()
         for m in models.data:
             if "embed" not in m.id.lower():
                 return m.id
@@ -29,73 +37,85 @@ def get_available_model() -> str:
         pass
     return "local-model"
 
+
+# ==============================================================
+# MCP TOOL: generate_story
+# This is what shows up in MCP Inspector
+# ==============================================================
 @mcp.tool()
-def write_and_save_story(
-    topic: str, 
-    filename: str = "creative_story.txt", 
-    genre: str = "fantasy",
-    model_name: str = ""
-) -> str:
+def generate_story(story_idea: str, filename: str) -> str:
     """
-    Generates a highly creative story using a local LM Studio model 
-    and saves the story into a text file.
+    Generate a creative story using LM Studio and save it to the stories folder.
 
     Args:
-        topic: The plot idea, theme, or concept for the story.
-        filename: The output filename (e.g., 'my_story.txt').
-        genre: The genre of the story (e.g., 'fantasy', 'sci-fi', 'gothic mystery').
-        model_name: Optional model ID to use. If left blank, automatically detects loaded LM Studio model.
+        story_idea: Your story idea or topic (e.g. 'A dragon who loves books').
+        filename: Name of the output text file (e.g. 'dragon.txt').
     """
 
-    # Ensure output file path is always inside the VTU25754 folder
-    if not os.path.isabs(filename):
-        save_path = os.path.join(PROJECT_DIR, filename)
-    else:
-        save_path = filename
+    # Always save inside the 'stories' folder
+    if not filename.endswith(".txt"):
+        filename = filename + ".txt"
 
-    # Automatically detect model if not specified
-    target_model = model_name if model_name else get_available_model()
+    save_path = os.path.join(STORIES_DIR, filename)
 
-    # Highly creative system prompt
+    # Detect available model
+    model_id = get_model()
+
+    # Prompt engineering for creative output
     system_prompt = (
-        "You are an award-winning master author known for rich sensory details, "
-        "deep emotional resonance, vivid character voices, and unexpected narrative twists. "
-        "Avoid generic tropes, clichés, and superficial descriptions. "
-        "Craft prose with rhythm, elegance, and deep imagination."
+        "You are an award-winning creative author. "
+        "Write rich, vivid, imaginative stories with strong characters, "
+        "sensory details, emotional depth, and an unexpected twist. "
+        "Avoid clichés. Make every sentence count."
     )
 
-    user_prompt = f"Write an engaging, highly imaginative {genre} story based on this topic:\n{topic}"
+    user_prompt = (
+        f"Write a highly creative and engaging story based on this idea:\n\n"
+        f"{story_idea}\n\n"
+        f"The story should be at least 5 paragraphs long."
+    )
 
     try:
-        # Request story generation from local LM Studio model
-        response = lm_studio_client.chat.completions.create(
-            model=target_model,
+        # Call LM Studio model
+        response = client.chat.completions.create(
+            model=model_id,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user",   "content": user_prompt}
             ],
-            temperature=0.9,      # Higher temperature = more creativity and variety
-            max_tokens=1500       # Token limit for story generation
+            temperature=0.9,
+            max_tokens=1500,
         )
 
-        story_content = response.choices[0].message.content
+        story_text = response.choices[0].message.content
 
-        # Save the generated story to a text file
-        with open(save_path, "w", encoding="utf-8") as file:
-            file.write(f"TITLE / TOPIC: {topic.upper()}\n")
-            file.write(f"GENRE: {genre.capitalize()}\n")
-            file.write(f"MODEL USED: {target_model}\n")
-            file.write("=" * 50 + "\n\n")
-            file.write(story_content)
+        # Write the story file inside stories/
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(f"STORY IDEA : {story_idea}\n")
+            f.write(f"MODEL USED : {model_id}\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(story_text)
 
-        return f"Successfully generated story using '{target_model}' and saved to:\n{save_path}\n\nPreview:\n{story_content[:300]}..."
+        return (
+            f"Story saved successfully!\n"
+            f"File    : {save_path}\n"
+            f"Model   : {model_id}\n\n"
+            f"Preview :\n{story_text[:400]}..."
+        )
 
     except Exception as e:
-        error_msg = (
-            f"Error connecting to LM Studio at {LM_STUDIO_URL}: {str(e)}\n"
-            "Please ensure LM Studio is running, a model is loaded, and Local Server is ON."
+        return (
+            f"ERROR: Could not connect to LM Studio.\n"
+            f"Details: {str(e)}\n\n"
+            f"Please:\n"
+            f"  1. Open LM Studio\n"
+            f"  2. Load a model\n"
+            f"  3. Go to Local Model API and turn the server ON (toggle = blue)\n"
+            f"  4. Then try again from MCP Inspector"
         )
-        return error_msg
+
 
 if __name__ == "__main__":
+    print(f"Starting Story Generator MCP Server...")
+    print(f"Stories will be saved to: {STORIES_DIR}")
     mcp.run()
